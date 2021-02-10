@@ -29,6 +29,7 @@ export type ComposeParams = { target: string; user?: string; upgrade?: boolean; 
 const logger: Logger = LoggerFactory.getLogger(LogType.System);
 
 const targetNodesFolder = BootstrapUtils.targetNodesFolder;
+const targetNemesisFolder = BootstrapUtils.targetNemesisFolder;
 const targetDatabasesFolder = BootstrapUtils.targetDatabasesFolder;
 const targetGatewaysFolder = BootstrapUtils.targetGatewaysFolder;
 const targetExplorersFolder = BootstrapUtils.targetExplorersFolder;
@@ -92,7 +93,7 @@ export class ComposeService {
             return `${hostFolder}:${imageFolder}:${readOnly ? 'ro' : 'rw'}`;
         };
 
-        logger.info(`creating docker-compose.yml from last used profile.`);
+        logger.info(`Creating docker-compose.yml from last used profile.`);
 
         const services: (DockerComposeService | undefined)[] = [];
 
@@ -197,16 +198,14 @@ export class ComposeService {
                     const serverDebugMode = presetData.dockerComposeDebugMode || n.dockerComposeDebugMode ? debugFlag : '';
                     const brokerDebugMode = presetData.dockerComposeDebugMode || n.brokerDockerComposeDebugMode ? debugFlag : '';
                     const waitForBroker = `/bin/bash ${nodeCommandsDirectory}/wait.sh ./data/broker.started`;
-                    const recoverServerCommand = `/bin/bash ${nodeCommandsDirectory}/runServerRecover.sh ${n.name}`;
                     let serverCommand = `/bin/bash ${nodeCommandsDirectory}/startServer.sh ${n.name}${serverDebugMode}`;
                     const brokerCommand = `/bin/bash ${nodeCommandsDirectory}/startBroker.sh ${n.brokerName || 'broker'}${brokerDebugMode}`;
-                    const recoverBrokerCommand = `/bin/bash ${nodeCommandsDirectory}/runServerRecover.sh ${n.brokerName || ''}`;
                     const portConfigurations = [{ internalPort: 7900, openPort: n.openPort }];
 
                     if (n.rewardProgram) {
                         await BootstrapUtils.mkdir(join(targetDocker, 'server'));
                         // Pull from cloud!!!!
-                        const rewardProgramAgentCommand = `${nodeCommandsDirectory}/agent-linux.bin --config ./userconfig/agent/agent.properties`;
+                        const rewardProgramAgentCommand = `${nodeCommandsDirectory}/agent-linux.bin --config ./agent/agent.properties`;
                         const rootDestination = (await BootstrapUtils.download(presetData.agentBinaryLocation, 'agent-linux.bin'))
                             .fileLocation;
                         const localDestination = join(targetDocker, 'server', 'agent-linux.bin');
@@ -221,10 +220,10 @@ export class ComposeService {
                         serverCommand += ' & ' + rewardProgramAgentCommand;
                     }
 
-                    const serverServiceCommands = n.brokerName ? [waitForBroker, serverCommand] : [recoverServerCommand, serverCommand];
+                    const serverServiceCommands = n.brokerName ? [waitForBroker, serverCommand] : [serverCommand];
 
                     const serverServiceCommand = `bash -c "${serverServiceCommands.join(' && ')}"`;
-                    const brokerServiceCommand = `bash -c "${[recoverBrokerCommand, brokerCommand].join(' && ')}"`;
+                    const brokerServiceCommand = `bash -c "${[brokerCommand].join(' && ')}"`;
 
                     const serverDependsOn: string[] = [];
                     const brokerDependsOn: string[] = [];
@@ -236,10 +235,10 @@ export class ComposeService {
                     if (n.brokerName) {
                         serverDependsOn.push(n.brokerName);
                     }
-
                     const volumes = [
                         vol(`../${targetNodesFolder}/${n.name}`, nodeWorkingDirectory, false),
                         vol(`./server`, nodeCommandsDirectory, true),
+                        vol(`../${targetNemesisFolder}/seed`, '/seed', true),
                     ];
                     const nodeService = await resolveService(n, {
                         user: serverDebugMode === debugFlag ? undefined : user, // if debug on, run as root

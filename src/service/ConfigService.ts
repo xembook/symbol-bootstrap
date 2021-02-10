@@ -33,6 +33,7 @@ import Logger from '../logger/Logger';
 import LoggerFactory from '../logger/LoggerFactory';
 import { Addresses, ConfigPreset, NodeAccount, NodePreset, NodeType } from '../model';
 import { AgentCertificateService } from './AgentCertificateService';
+import { BackupSyncService } from './BackupSyncService';
 import { BootstrapUtils, KnownError } from './BootstrapUtils';
 import { CertificateService } from './CertificateService';
 import { ConfigLoader } from './ConfigLoader';
@@ -57,6 +58,8 @@ export interface ConfigParams {
     target: string;
     password?: string;
     user: string;
+    backupSync?: boolean;
+    fullBackup?: boolean;
     pullImages?: boolean;
     assembly?: string;
     customPreset?: string;
@@ -72,12 +75,14 @@ const logger: Logger = LoggerFactory.getLogger(LogType.System);
 
 export class ConfigService {
     public static defaultParams: ConfigParams = {
+        ...BackupSyncService.defaultParams,
         target: BootstrapUtils.defaultTargetFolder,
         report: false,
         preset: Preset.bootstrap,
         reset: false,
         upgrade: false,
         pullImages: false,
+        backupSync: false,
         user: BootstrapUtils.CURRENT_USER,
     };
     private readonly configLoader: ConfigLoader;
@@ -135,18 +140,13 @@ export class ConfigService {
             await BootstrapUtils.mkdir(target);
 
             this.cleanUpConfiguration(presetData);
-
             await this.generateNodeCertificates(presetData, addresses);
             await this.generateAgentCertificates(presetData);
             await this.generateNodes(presetData, addresses);
+            await this.generateDataFolders(oldPresetData, oldAddresses, presetData, addresses);
             await this.generateGateways(presetData);
             await this.generateExplorers(presetData);
             await this.generateWallets(presetData);
-            if (!oldPresetData && !oldAddresses) {
-                await this.generateNemesis(presetData, addresses);
-            } else {
-                logger.info('Nemesis data cannot be generated or copied when upgrading...');
-            }
 
             if (this.params.report) {
                 await new ReportService(this.root, this.params).run(presetData);
@@ -168,10 +168,31 @@ export class ConfigService {
         }
     }
 
+    private async generateDataFolders(
+        oldPresetData: ConfigPreset | undefined,
+        oldAddresses: Addresses | undefined,
+        presetData: ConfigPreset,
+        addresses: Addresses,
+    ) {
+        if (!oldPresetData && !oldAddresses) {
+            if (this.params.backupSync) {
+                const backupSyncService = new BackupSyncService(this.root, this.params);
+                await backupSyncService.run(presetData);
+                logger.info('Backup Sync has been executed...');
+            }
+            await this.generateNemesis(presetData, addresses);
+        } else {
+            if (this.params.backupSync) {
+                logger.info('Backup Sync cannot be executed when upgrading...');
+            } else {
+                logger.info('Nemesis data cannot be generated or copied when upgrading...');
+            }
+        }
+    }
+
     private async generateNemesis(presetData: ConfigPreset, addresses: Addresses) {
         const target = this.params.target;
         const nemesisSeedFolder = BootstrapUtils.getTargetNemesisFolder(target, false, 'seed');
-
         if (!presetData.nemesisSeedFolder && presetData.nemesis) {
             await this.generateNemesisConfig(presetData, addresses);
         } else {
@@ -179,14 +200,18 @@ export class ConfigService {
             await BootstrapUtils.generateConfiguration({}, copyFrom, nemesisSeedFolder);
         }
 
+        return await this.copyNemesisSeed(presetData, addresses);
+    }
+
+    private async copyNemesisSeed(presetData: ConfigPreset, addresses: Addresses) {
+        const target = this.params.target;
+        const nemesisSeedFolder = BootstrapUtils.getTargetNemesisFolder(target, false, 'seed');
         BootstrapUtils.validateFolder(nemesisSeedFolder);
         await Promise.all(
             (addresses.nodes || []).map(async (account) => {
                 const name = account.name;
                 const dataFolder = BootstrapUtils.getTargetNodesFolder(target, false, name, 'data');
                 await BootstrapUtils.mkdir(dataFolder);
-                const seedFolder = BootstrapUtils.getTargetNodesFolder(target, false, name, 'seed');
-                await BootstrapUtils.generateConfiguration({}, nemesisSeedFolder, seedFolder);
             }),
         );
         return { presetData, addresses };
@@ -224,7 +249,8 @@ export class ConfigService {
         const copyFrom = join(this.root, 'config', 'node');
         const name = account.name;
 
-        const outputFolder = BootstrapUtils.getTargetNodesFolder(this.params.target, false, name, 'userconfig');
+        const serverConfig = BootstrapUtils.getTargetNodesFolder(this.params.target, false, name, 'server-config');
+        const brokerConfig = BootstrapUtils.getTargetNodesFolder(this.params.target, false, name, 'broker-config');
         const nodePreset = (presetData.nodes || [])[index];
 
         const generatedContext = {
@@ -261,15 +287,33 @@ export class ConfigService {
             templateContext.restGatewayUrl = nodePreset.restGatewayUrl || `http://${restService.host || nodePreset.host}:3000`;
             templateContext.rewardProgram = rewardProgram;
             templateContext.serverVersion = nodePreset.serverVersion || presetData.serverVersion;
-        } else {
-            excludeFiles.push('agent.properties');
+            const copyFrom = join(this.root, 'config', 'agent');
+            const agentConfig = BootstrapUtils.getTargetNodesFolder(this.params.target, false, name, 'agent');
+            await BootstrapUtils.generateConfiguration(templateContext, copyFrom, agentConfig, []);
         }
 
-        await BootstrapUtils.generateConfiguration(templateContext, copyFrom, outputFolder, excludeFiles);
+        const serverRecoveryConfig = {
+            addressextractionRecovery: false,
+            mongoRecovery: false,
+            zeromqRecovery: false,
+            filespoolingRecovery: true,
+            hashcacheRecovery: true,
+        };
+
+        const brokerRecoveryConfig = {
+            addressextractionRecovery: true,
+            mongoRecovery: true,
+            zeromqRecovery: true,
+            filespoolingRecovery: false,
+            hashcacheRecovery: true,
+        };
+
+        logger.info('Generating server configuration');
+        await BootstrapUtils.generateConfiguration({ ...serverRecoveryConfig, ...templateContext }, copyFrom, serverConfig, excludeFiles);
         await this.generateP2PFile(
             presetData,
             addresses,
-            outputFolder,
+            serverConfig,
             NodeType.PEER_NODE,
             (nodePresetData) => nodePresetData.harvesting,
             'peers-p2p.json',
@@ -277,11 +321,38 @@ export class ConfigService {
         await this.generateP2PFile(
             presetData,
             addresses,
-            outputFolder,
+            serverConfig,
             NodeType.API_NODE,
             (nodePresetData) => nodePresetData.api,
             'peers-api.json',
         );
+
+        if (nodePreset.brokerName) {
+            logger.info('Generating broker configuration');
+            await BootstrapUtils.generateConfiguration(
+                { ...brokerRecoveryConfig, ...templateContext },
+                copyFrom,
+                brokerConfig,
+                excludeFiles,
+            );
+            await this.generateP2PFile(
+                presetData,
+                addresses,
+                brokerConfig,
+                NodeType.PEER_NODE,
+                (nodePresetData) => nodePresetData.harvesting,
+                'peers-p2p.json',
+            );
+            await this.generateP2PFile(
+                presetData,
+                addresses,
+                brokerConfig,
+                NodeType.API_NODE,
+                (nodePresetData) => nodePresetData.api,
+                'peers-api.json',
+            );
+        }
+
         await new VotingService(this.params).run(presetData, account, nodePreset);
     }
 
@@ -329,7 +400,7 @@ export class ConfigService {
         const transactionsDirectory = join(nemesisWorkingDir, presetData.nemesis.transactionsDirectory || presetData.transactionsDirectory);
         await BootstrapUtils.mkdir(transactionsDirectory);
         const copyFrom = join(this.root, `config`, `nemesis`);
-        const moveTo = join(nemesisWorkingDir, `userconfig`);
+        const moveTo = join(nemesisWorkingDir, `server-config`);
         const templateContext = { ...(presetData as any), addresses };
         await Promise.all(
             (addresses.nodes || []).filter((n) => n.vrf).map((n) => this.createVrfTransaction(transactionsDirectory, presetData, n)),
@@ -495,15 +566,23 @@ export class ConfigService {
                     this.params.target,
                     false,
                     gatewayPreset.apiNodeName,
-                    'userconfig',
+                    'server-config',
                     'resources',
                 );
+                const apiNodeCertFolder = BootstrapUtils.getTargetNodesFolder(this.params.target, false, gatewayPreset.apiNodeName, 'cert');
                 await BootstrapUtils.generateConfiguration(
                     {},
                     apiNodeConfigFolder,
                     join(moveTo, 'api-node-config'),
                     [],
-                    ['node.crt.pem', 'node.key.pem', 'ca.cert.pem', 'config-network.properties', 'config-node.properties'],
+                    ['config-network.properties', 'config-node.properties'],
+                );
+                await BootstrapUtils.generateConfiguration(
+                    {},
+                    apiNodeCertFolder,
+                    join(moveTo, 'api-node-config', 'cert'),
+                    [],
+                    ['node.crt.pem', 'node.key.pem', 'ca.cert.pem'],
                 );
             }),
         );
@@ -561,8 +640,14 @@ export class ConfigService {
 
     private cleanUpConfiguration(presetData: ConfigPreset) {
         (presetData.nodes || []).forEach((gateway) => {
-            const configFolder = BootstrapUtils.getTargetNodesFolder(this.params.target, false, gateway.name, 'userconfig');
-            BootstrapUtils.deleteFolder(configFolder);
+            const serverConfigFolder = BootstrapUtils.getTargetNodesFolder(this.params.target, false, gateway.name, 'server-config');
+            BootstrapUtils.deleteFolder(serverConfigFolder);
+
+            const brokerConfigFolder = BootstrapUtils.getTargetNodesFolder(this.params.target, false, gateway.name, 'broker-config');
+            BootstrapUtils.deleteFolder(brokerConfigFolder);
+
+            const certConfigFolder = BootstrapUtils.getTargetNodesFolder(this.params.target, false, gateway.name, 'cert');
+            BootstrapUtils.deleteFolder(certConfigFolder);
         });
         (presetData.gateways || []).forEach((node) => {
             const configFolder = BootstrapUtils.getTargetGatewayFolder(this.params.target, false, node.name);

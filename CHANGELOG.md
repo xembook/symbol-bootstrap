@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The changelog format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.4.4] - NEXT
+
+**Milestone**: Hippopotamus(0.10.0.7)
+
+| Package          | Version | Link                                                               |
+| ---------------- | ------- | ------------------------------------------------------------------ |
+| Symbol Bootstrap | v0.4.3  | [symbol-bootstrap](https://www.npmjs.com/package/symbol-bootstrap) |
+
+-   Added `--backupSync` to `config` and `start` commands. It downloads a backup with the Mongo and RocksDb databases for faster synchronization.
+-   Added `backup` command. The command backups the Mongo and RocksDb data folder into a Zip file that can be used for `--backupSync` feature.
+-   Splitting `userconfig` into `server-config` and `broker-config` for each service. 
+
 ## [0.4.3] - Feb-15-2021
 
 **Milestone**: Hippopotamus(0.10.0.7)

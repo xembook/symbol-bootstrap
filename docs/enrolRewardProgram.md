@@ -33,4 +33,4 @@ EXAMPLE
   $ symbol-bootstrap enrolRewardProgram
 ```
 
-_See code: [src/commands/enrolRewardProgram.ts](https://github.com/nemtech/symbol-bootstrap/blob/v0.4.3/src/commands/enrolRewardProgram.ts)_
+_See code: [src/commands/enrolRewardProgram.ts](https://github.com/nemtech/symbol-bootstrap/blob/v0.4.4/src/commands/enrolRewardProgram.ts)_
